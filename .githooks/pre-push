@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Enterprise Git Hook: pre-push
+# Description: Prevents pushing commits that bypassed local commit-msg hooks.
+# Acts as a secondary defense layer before code reaches remote repositories.
+# ==============================================================================
+
+set -eo pipefail
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+JIRA_REGEX="^\[ERP-[0-9]+\](:?[[:space:]]+).+$"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Skip branch deletion
+    if [ "$local_sha" = "$ZERO_SHA" ]; then
+        continue
+    fi
+
+    # Determine commit range to inspect
+    if [ "$remote_sha" = "$ZERO_SHA" ]; then
+        # New branch on remote: check commits not in any remote branch, or last 30 commits if fresh
+        RANGE=$(git rev-list "$local_sha" --not --remotes 2>/dev/null || git rev-list -n 30 "$local_sha")
+    else
+        # Existing branch update: inspect commits being pushed
+        RANGE=$(git rev-list "$remote_sha..$local_sha")
+    fi
+
+    for commit in $RANGE; do
+        COMMIT_MSG=$(git log -1 --format=%s "$commit")
+        
+        # Allow standard Git automated commits
+        if [[ "$COMMIT_MSG" =~ ^Merge ]] || \
+           [[ "$COMMIT_MSG" =~ ^Revert ]] || \
+           [[ "$COMMIT_MSG" =~ ^fixup\! ]] || \
+           [[ "$COMMIT_MSG" =~ ^squash\! ]]; then
+            continue
+        fi
+
+        if ! [[ "$COMMIT_MSG" =~ $JIRA_REGEX ]]; then
+            echo ""
+            echo "========================================================================"
+            echo "❌ PUSH REJECTED: Unverified commit detected in push range!"
+            echo "------------------------------------------------------------------------"
+            echo "Commit SHA: $commit"
+            echo "Message:    \"$COMMIT_MSG\""
+            echo ""
+            echo "This commit violates the Jira Issue Key requirement [ERP-XXX]."
+            echo "Even if '--no-verify' was used locally, remote push is blocked."
+            echo ""
+            echo "Remediation:"
+            echo "  Run 'git rebase -i HEAD~N' to amend invalid commit messages,"
+            echo "  or use 'git commit --amend' if it is the latest commit."
+            echo "========================================================================"
+            echo ""
+            exit 1
+        fi
+    done
+done
+
+exit 0

@@ -1,0 +1,3 @@
+docker compose up -d
+./erp-be/gradlew -p erp-be bootRun
+./erp-be/gradlew -p erp-be test

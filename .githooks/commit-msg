@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Enterprise Git Hook: commit-msg
+# Description: Validates that commit messages adhere to Jira Issue Key format.
+# Standard: [ERP-XXX] <type>(<scope>): <subject> OR [ERP-XXX]: <subject>
+# ==============================================================================
+
+set -eo pipefail
+
+COMMIT_MSG_FILE="$1"
+
+if [ ! -f "$COMMIT_MSG_FILE" ]; then
+    echo "❌ Error: Commit message file not found at $COMMIT_MSG_FILE"
+    exit 1
+fi
+
+COMMIT_MSG=$(head -n 1 "$COMMIT_MSG_FILE")
+
+# Allow standard Git automated commits
+if [[ "$COMMIT_MSG" =~ ^Merge ]] || \
+   [[ "$COMMIT_MSG" =~ ^Revert ]] || \
+   [[ "$COMMIT_MSG" =~ ^fixup\! ]] || \
+   [[ "$COMMIT_MSG" =~ ^squash\! ]]; then
+    exit 0
+fi
+
+# Regex pattern for Jira issue key in square brackets: [ERP-123] ...
+JIRA_REGEX="^\[ERP-[0-9]+\](:?[[:space:]]+).+$"
+
+if ! [[ "$COMMIT_MSG" =~ $JIRA_REGEX ]]; then
+    echo ""
+    echo "========================================================================"
+    echo "❌ COMMIT REJECTED: Invalid commit message format!"
+    echo "------------------------------------------------------------------------"
+    echo "Received commit message:"
+    echo "  \"$COMMIT_MSG\""
+    echo ""
+    echo "Per ERP Enterprise Architecture standards (docs/processes/git-jira-workflow.md),"
+    echo "all commit subjects must start with a Jira Issue Key:"
+    echo ""
+    echo "  Format:   [ERP-XXX] <type>(<scope>): <concise description>"
+    echo "  Examples: [ERP-401] feat(order): implement sales order subsystem"
+    echo "            [ERP-203] fix(pricing): prevent negative volume tier thresholds"
+    echo "            [ERP-101] docs(adrs): record state machine architecture decision"
+    echo ""
+    echo "How to fix this commit:"
+    echo "  git commit --amend -m \"[ERP-XXX] your message here\""
+    echo "========================================================================"
+    echo ""
+    exit 1
+fi
+
+exit 0

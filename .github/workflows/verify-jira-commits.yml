@@ -1,0 +1,172 @@
+name: "Verify Jira Commit & PR Compliance"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+
+jobs:
+  verify-jira-compliance:
+    name: "Jira Format Compliance Gate"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: "Checkout Repository"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Evaluate Jira Issue Key Compliance (Two-Factor Gate)"
+        shell: bash
+        run: |
+          set -e
+
+          JIRA_REGEX='^\[ERP-[0-9]+\](:?[[:space:]]+).+$'
+          EVENT_NAME="${{ github.event_name }}"
+          
+          echo "=========================================================================="
+          echo "🔍 Running Enterprise Jira Compliance Verification Gate"
+          echo "Event: $EVENT_NAME"
+          echo "=========================================================================="
+
+          # Initialize GitHub Actions Step Summary table
+          echo "### 📋 Jira Compliance Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check Target | Value | Status | Policy Note |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| :--- | :--- | :--- | :--- |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            PR_TITLE="${{ github.event.pull_request.title }}"
+            PR_BASE="${{ github.event.pull_request.base.ref }}"
+            PR_HEAD="${{ github.event.pull_request.head.sha }}"
+            
+            echo "Inspecting Pull Request Title: \"$PR_TITLE\""
+            
+            PR_TITLE_VALID=0
+            if [[ "$PR_TITLE" =~ $JIRA_REGEX ]]; then
+              PR_TITLE_VALID=1
+              echo "| **PR Title** | \`$PR_TITLE\` | ✅ Passed | Compliant with \`[ERP-XXX]\` format |" >> "$GITHUB_STEP_SUMMARY"
+              echo "✅ PR Title satisfies Jira Issue Key regex."
+            else
+              echo "| **PR Title** | \`$PR_TITLE\` | ❌ Failed | Violates \`[ERP-XXX]\` format |" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ PR Title does NOT satisfy Jira Issue Key regex."
+            fi
+
+            # Inspect individual commits on the PR branch
+            echo ""
+            echo "Inspecting commits between origin/$PR_BASE and HEAD ($PR_HEAD)..."
+            
+            git fetch origin "$PR_BASE" --depth=50 || true
+            COMMIT_RANGE="origin/$PR_BASE..$PR_HEAD"
+            
+            NON_COMPLIANT_COMMITS=()
+            TOTAL_COMMITS=0
+
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
+              SHA=$(echo "$line" | cut -d' ' -f1)
+              MSG=$(echo "$line" | cut -d' ' -f2-)
+
+              # Skip automated merge/revert commits
+              if [[ "$MSG" =~ ^Merge ]] || [[ "$MSG" =~ ^Revert ]] || [[ "$MSG" =~ ^fixup\! ]] || [[ "$MSG" =~ ^squash\! ]]; then
+                echo "  ℹ️ Skipping automated commit [$SHA]: $MSG"
+                continue
+              fi
+
+              if ! [[ "$MSG" =~ $JIRA_REGEX ]]; then
+                echo "  ⚠️ Non-compliant commit [$SHA]: $MSG"
+                NON_COMPLIANT_COMMITS+=("[$SHA] $MSG")
+              else
+                echo "  ✅ Compliant commit [$SHA]: $MSG"
+              fi
+            done < <(git log --oneline "$COMMIT_RANGE")
+
+            echo ""
+            echo "Summary: $TOTAL_COMMITS commit(s) analyzed, ${#NON_COMPLIANT_COMMITS[@]} non-compliant commit(s)."
+
+            # Policy Enforcement (Flexible Squash-Merge Strategy 3-B)
+            if [ $PR_TITLE_VALID -eq 1 ]; then
+              if [ ${#NON_COMPLIANT_COMMITS[@]} -eq 0 ]; then
+                echo "| **Commits ($TOTAL_COMMITS)** | 100% Compliant | ✅ Passed | Clean commit history ready for Rebase or Squash |" >> "$GITHUB_STEP_SUMMARY"
+                echo "=========================================================================="
+                echo "🎉 COMPLIANCE PASSED: Both PR Title and all individual commits are valid!"
+                echo "=========================================================================="
+                exit 0
+              else
+                echo "| **Commits ($TOTAL_COMMITS)** | ${#NON_COMPLIANT_COMMITS[@]} non-compliant | ⚠️ Warning | Squash-and-Merge **REQUIRED** to preserve Jira audit trail |" >> "$GITHUB_STEP_SUMMARY"
+                echo "=========================================================================="
+                echo "⚠️ SQUASH-MERGE NOTIFICATION:"
+                echo "PR Title is valid, but branch contains ${#NON_COMPLIANT_COMMITS[@]} commit(s) without [ERP-XXX]."
+                echo "Under Policy 3-B (Flexible Enforcement), this PR is permitted ONLY IF"
+                echo "merged using 'Squash and merge' so that the final mainline commit"
+                echo "inherits the valid PR Title."
+                echo "=========================================================================="
+                exit 0
+              fi
+            else
+              echo "| **Commits ($TOTAL_COMMITS)** | ${#NON_COMPLIANT_COMMITS[@]} non-compliant | ❌ Blocked | PR Title must be corrected |" >> "$GITHUB_STEP_SUMMARY"
+              echo ""
+              echo "=========================================================================="
+              echo "❌ MERGE BLOCKED: Pull Request Title does not contain Jira Issue Key!"
+              echo "--------------------------------------------------------------------------"
+              echo "Received PR Title: \"$PR_TITLE\""
+              echo ""
+              echo "Expected format:  [ERP-XXX] <type>(<scope>): <concise description>"
+              echo "Example:          [ERP-401] feat(order): implement sales order subsystem"
+              echo ""
+              echo "Remediation: Click 'Edit' next to the Pull Request title on GitHub"
+              echo "             and add the Jira issue prefix (e.g. [ERP-123])."
+              echo "=========================================================================="
+              exit 1
+            fi
+
+          elif [ "$EVENT_NAME" = "push" ]; then
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.event.after }}"
+            ZERO_SHA="0000000000000000000000000000000000000000"
+
+            echo "Direct push detected on protected branch. Inspecting push range: $BEFORE..$AFTER"
+            
+            if [ "$BEFORE" = "$ZERO_SHA" ] || [ -z "$BEFORE" ]; then
+              COMMIT_RANGE="-n 10 $AFTER"
+            else
+              COMMIT_RANGE="$BEFORE..$AFTER"
+            fi
+
+            VIOLATIONS=0
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              SHA=$(echo "$line" | cut -d' ' -f1)
+              MSG=$(echo "$line" | cut -d' ' -f2-)
+
+              if [[ "$MSG" =~ ^Merge ]] || [[ "$MSG" =~ ^Revert ]]; then
+                continue
+              fi
+
+              if ! [[ "$MSG" =~ $JIRA_REGEX ]]; then
+                echo "  ❌ Direct push violation [$SHA]: \"$MSG\""
+                VIOLATIONS=$((VIOLATIONS + 1))
+              else
+                echo "  ✅ Mainline commit [$SHA]: \"$MSG\""
+              fi
+            done < <(git log --oneline $COMMIT_RANGE)
+
+            if [ $VIOLATIONS -gt 0 ]; then
+              echo "| **Direct Push** | $VIOLATIONS violation(s) | ❌ Failed | Direct push to mainline contains non-Jira commits |" >> "$GITHUB_STEP_SUMMARY"
+              echo "=========================================================================="
+              echo "❌ PUSH BLOCKED: Detected $VIOLATIONS commit(s) missing [ERP-XXX] prefix on mainline!"
+              echo "=========================================================================="
+              exit 1
+            else
+              echo "| **Direct Push** | Clean | ✅ Passed | All mainline commits adhere to Jira standard |" >> "$GITHUB_STEP_SUMMARY"
+              echo "✅ All pushed commits adhere to Jira Issue Key standard."
+              exit 0
+            fi
+          fi

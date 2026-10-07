@@ -1,0 +1,64 @@
+# ==============================================================================
+# Root .gitignore for ERP System (Monorepo: erp-be + erp-fe)
+# ==============================================================================
+
+# --- Operating System Files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# --- Security & Secrets ---
+# Crucial: Never commit active local environment variables
+.env
+.env*.local
+*.pem
+*.key
+*.p12
+
+# --- IDEs & Editors ---
+.idea/
+*.iml
+*.iws
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# --- Java & Gradle (erp-be) ---
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+bin/
+out/
+*.class
+*.jar
+*.war
+*.ear
+
+# --- Node.js & Frontend (erp-fe) ---
+node_modules/
+dist/
+.next/
+.nuxt/
+.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Logs & Runtime Data ---
+logs/
+*.log
+*.tmp
+*.temp
+*.swp
+*~
